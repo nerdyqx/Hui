@@ -1,0 +1,136 @@
+#! /bin/bash
+sed "s/SOURCE/$1/g" /home/biosoftware/ppgv1/parfiles/parExtact | sed "s/Targetedpops/$2/g" > parExtact.$1.$2
+/usr/bin/convertf -p parExtact.$1.$2
+
+##pca
+ sed "s/Targetedpops/$2/g" /home/biosoftware/ppgv1/parfiles/parSmartPCA | sed "s/Targetedpopsmodern/$3/g" > parSmartPCA.$2.$3
+ smartpca -p parSmartPCA.$2.$3
+
+# convert gen0,ind,snp to bed bim fam
+sed "s/Targetedpops/$2/g" /home/biosoftware/ppgv1/parfiles/parconvertftobed > parconvertftobed.$2
+/usr/bin/convertf -p parconvertftobed.$2
+mv $2.fam dul$2.fam
+cat $2.ind | awk 'BEGIN{FS=" ";OFS="\t";}{print $3;}' > pop.fam
+cat dul$2.fam | awk 'BEGIN{FS=" ";OFS="\t";}{print $2,$3,$4,$5,$6;}' > ind2_6.fam
+awk 'NR==FNR{a[FNR]=$0;}NR>FNR{print a[FNR]" "$0;}' pop.fam ind2_6.fam > $2_1.fam
+sed 's/[\t ]\+/ /g' $2_1.fam > $2.fam
+rm pop.fam ind2_6.fam $2_1.fam
+
+####admixture
+plink --bfile    $2 --indep-pairwise 200 25 0.4 --allow-no-sex --out plink
+plink --bfile    $2 --extract plink.prune.in --make-bed --out  $2_prunned --allow-no-sex
+for x in {2..4}; do
+nohup  admixture -B100 --cv=10 -s time -j15 $2_prunned.bed $x > output$x &
+done
+
+
+mkdir -p 2ROH_all
+cd 2ROH_all
+ln -s ../$2.* ./
+####caculatae ROH
+plink --bfile $2 --homozyg  --homozyg-density 50 --homozyg-gap 100 --homozyg-kb 500 --homozyg-snp 50 --homozyg-window-het 1 --homozyg-window-snp 50  --homozyg-window-threshold 0.05 --out $2
+
+#--homozyg-density 50 \ #一段ROH中每50kb必须有1个SNP
+##        --homozyg-gap 100 \ #如果连续两个SNP的间隔大于100kb，那么就不能归为同一个ROH
+#        --homozyg-kb 500 \ #只检测长度大于500kb的ROH
+#        --homozyg-snp 50 \ #只检测长度超过50个SNP的ROH
+#        --homozyg-window-het 1 \ #ROH滑窗中可以允许有一个SNP位点为杂合
+#       --homozyg-window-snp 50 \ #滑窗大小为50个SNP
+#       --homozyg-window-threshold 0.05 \ #包含某个SNP的完全纯合滑窗的比例至少为5%
+#       --out $2
+cat $2.hom.indiv | awk 'BEGIN{FS=" ";OFS="\t";}{print  $2,$1,$3,$4,$5,$6;}' > ROHall_$2.hom
+/usr/bin/perl /home/biosoftware/ppgv1/ibd_roh_pl/ROH_classify.pl $2.hom 1000 5000
+/usr/bin/Rscript /home/biosoftware/ppgv1/ibd_roh_pl/ROHvisulization.R $2 #可视化
+cd ..
+
+
+cp ../Groupall.csv ./Group.csv
+##Treemix and pairwise Fst
+/usr/bin/perl /home/biosoftware/ppgv1/pairwiseFst/pairwise.perl  $2 0 0
+
+#mkdir -p 1Fst_highly_differentiated_loci
+#cd 1Fst_highly_differentiated_loci
+#mv ../top* ./
+#mv ../*.nosex ./
+#mv ../*.annot ./
+#mv ../*Annotation* ./
+#cd ../
+
+for x in {0..7}; do
+nohup treemix -i TreeMix.gz  -m $x -se -bootstrap -k 500 -global -noss -o Treemix$x &
+done
+
+#-root 指定外群（outgroup）
+#-k 以滑动窗口的方式选择SNP位点构建树
+#-m 指定预估可能有几次基因流事件。比如根据经验推测可能有两次基因流事件，则-m参数设置为2（{0..15}执行-m等于0-15）
+#-g 指定先验进化树
+#-bootstrap 进行bootstrap replicate
+#-noss 关闭样本数量矫正
+
+### shapeit #IBD-related data phase, data cintrol.Segmented HAPlotype Estimation & Imputation Tool
+dir=$(pwd)
+bfile=${dir}/$2
+mkdir -p ibd_$2;
+ cd ibd_$2
+ outdir=${dir}/ibd_$2
+plink --bfile ${bfile} --geno 0.1 --mind 0.1 --make-bed --out ${outdir}/$2_ibd_geno &&
+#extract chromosome
+ for x in {1..22}; do
+         plink --bfile ${outdir}/$2_ibd_geno --chr $x --make-bed --alleleACGT --out ${outdir}/$2_ibd_geno.chr$x
+         plink --bfile ${outdir}/$2_ibd_geno.chr$x --snps-only just-acgt --make-bed --out ${outdir}/$2_ibd.chr$x
+ done
+ # Shapiet#phased
+ 
+for x in {2..22}; do
+
+nohup shapeit --input-bed ${outdir}/$2_ibd.chr$x.bed ${outdir}/$2_ibd.chr$x.bim ${outdir}/$2_ibd.chr$x.fam --input-map  /home/biosoftware/ppgv1/genetic_map/genetic_map_adjust_chr$x.txt --output-max ${outdir}/$2_ibd.chr$x.phased.haps ${outdir}/$2_ibd.chr$x.phased.sample --output-log ${outdir}/$2_ibd.chr$x.log --force --burn 10 --prune 10 --main 30 --thread 25 &
+done
+
+#shapeit --input-bed ${outdir}/$2_ibd.chr2.bed ${outdir}/$2_ibd.chr2.bim ${outdir}/$2_ibd.chr2.fam --input-map  /home/biosoftware/ppgv1/genetic_map/genetic_map_adjust_chr2.txt --output-max ${outdir}/$2_ibd.chr2.phased.haps ${outdir}/$2_ibd.chr2.phased.sample --output-log ${outdir}/$2_ibd.chr2.log --force --burn 10 --prune 10 --main 30 --thread 4 
+#shapeit --input-bed ${outdir}/$2_ibd.chr3.bed ${outdir}/$2_ibd.chr3.bim ${outdir}/$2_ibd.chr3.fam --input-map  /home/biosoftware/ppgv1/genetic_map/genetic_map_adjust_chr3.txt --output-max ${outdir}/$2_ibd.chr3.phased.haps ${outdir}/$2_ibd.chr3.phased.sample --output-log ${outdir}/$2_ibd.chr3.log --force --burn 10 --prune 10 --main 30 --thread 4 
+
+shapeit --input-bed ${outdir}/$2_ibd.chr1.bed ${outdir}/$2_ibd.chr1.bim ${outdir}/$2_ibd.chr1.fam --input-map  /home/biosoftware/ppgv1/genetic_map/genetic_map_adjust_chr1.txt --output-max ${outdir}/$2_ibd.chr1.phased.haps ${outdir}/$2_ibd.chr1.phased.sample --output-log ${outdir}/$2_ibd.chr1.log --force --burn 10 --prune 10 --main 30 --thread 30
+ 
+ #refined-ibd
+ for x in {1..22}; do
+         shapeit -convert --input-haps ${outdir}/$2_ibd.chr$x.phased --output-vcf ${outdir}/$2_ibd.chr$x.vcf --output-log ${outdir}/$2_ibd.chr$x_vcf.log
+         /usr/bin/java -Xmx2026m -jar /home/biosoftware/fs/refined-ibd.17Jan20.102.jar gt=${outdir}/$2_ibd.chr$x.vcf map=/home/biosoftware/ppgv1/genetic_map/plink.chr$x.GRCh37.map  out=${outdir}/$2_ibd.chr$x length=0.1;
+         #大样本量计算IBD用下面这个
+         # /usr/bin/java -Xmx4g -jar /home/biosoftware/hap-ibd/hap-ibd.jar gt=./$2_ibd.chr$x.vcf map=/home/biosoftware/ppgv1/genetic_map/plink.chr$x.GRCh37.map  out=./$2_ibd.chr$x ;
+         gunzip $2_ibd.chr${x}.hbd.gz
+         gunzip $2_ibd.chr${x}.ibd.gz
+         cat $2_ibd.chr${x}.ibd >> $2_ibd_all.ibdall
+         cat $2_ibd.chr${x}.hbd >> $2_ibd_all.hbdall
+         gzip -c ${outdir}/$2_ibd.chr$x.vcf
+ done
+for x in {3..22}; do
+ nohup         /usr/bin/perl /home/biosoftware/ppgv1/fs_pl/impute2chromopainter.pl $2_ibd.chr$x.phased.haps $2_ibd.chr$x.phase &
+ done
+       /usr/bin/perl /home/biosoftware/ppgv1/fs_pl/impute2chromopainter.pl $2_ibd.chr1.phased.haps $2_ibd.chr1.phase
+       /usr/bin/perl /home/biosoftware/ppgv1/fs_pl/impute2chromopainter.pl $2_ibd.chr2.phased.haps $2_ibd.chr2.phase
+
+ ####/home/biosoftware/ppgv1/fs_pl/convertrecfile.pl
+ ##EXAMPLE: ./convertrecfile.pl -M hap my_chr1.phase genetic_map_Finalversion_GRCh37_chr1.txt my_chr1.recombfile
+ for x in {1..22}; do
+      /usr/bin/perl   /home/biosoftware/ppgv1/fs_pl/convertrecfile.pl  -M hap $2_ibd.chr$x.phase /home/biosoftware/ppgv1/genetic_map/genetic_map_Finalversion_GRCh37_chr$x.txt genetic_map_Finalversion_GRCh37_chr$x.recombfile
+ done
+ #LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/
+ #export LD_LIBRARY_PATH
+
+ cp ../$2_ibd.ids ./
+ #######HPC
+ date > $2_ibdHPC.time
+ fs $2_ibdHPC.cp -hpc 1 -idfile $2_ibd.ids -phasefiles $2_ibd.chr{1..22}.phase -recombfiles genetic_map_Finalversion_GRCh37_chr{1..22}.recombfile -s3iters 100000 -s4iters 50000 -s1minsnps 1000 -s1indfrac 0.1 -go
+ cat $2_ibdHPC/commandfiles/commandfile1.txt | parallel
+ fs $2_ibdHPC.cp -go
+ cat $2_ibdHPC/commandfiles/commandfile2.txt | parallel
+ fs $2_ibdHPC.cp -go
+ cat $2_ibdHPC/commandfiles/commandfile3.txt | parallel
+ fs $2_ibdHPC.cp -go
+ cat $2_ibdHPC/commandfiles/commandfile4.txt | parallel
+ fs $2_ibdHPC.cp -go
+ date >> $2_ibdHPC.time
+
+ ##Visulization of fs fineStrcute
+ulimit -s unlimited
+/usr/bin/Rscript /home/biosoftware/ppgv1/R_packages/Fat_Initial_Fs.R $2

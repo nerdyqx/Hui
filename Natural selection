@@ -1,0 +1,22 @@
+#PBS
+for i in {1..22};do
+python RunPBS.py --popfile pbs.pop --pbspop SM:Yakut:French --dropna Manchu_chr${i}.updated.vcf.gz > SM_chr${i}.pbs &
+done
+wait
+for i in {1..22};do
+python sliding_windows_snp.py -b SM_chr${i}.pbs -w 20 -s 5
+mv windows_20SNP_step5.bed SM_chr${i}_windows_20SNP_step5.bed
+mv sliding_windows_snp_top_regions_PBS.bed SM_chr${i}_sliding_windows_snp_top_regions_PBS.bed
+mv mean_pos_PBS.bed SM_chr${i}_mean_pos_PBS.bed
+bedtools merge -i SM_chr${i}_sliding_windows_snp_top_regions_PBS.bed -d 10000 -c 4 -o max > SM_chr${i}_windows_and_PBS_top_windows_final_merged.bed
+awk 'NR>1 {OFS="\t"; print $1,$2,$2,$4}' SM_chr${i}.pbs > SM_chr${i}.bed
+bedtools intersect -wa -wb -a SM_chr${i}.bed -b SM_chr${i}_windows_and_PBS_top_windows_final_merged.bed > SM_chr${i}_region.bed
+done
+
+#iHS
+for x in {1..22};do
+selscan --ihs  --vcf chr$x.updated_vcf.gz --map  chr$x.updated_A.map --out chr$x.new --threads 16 &
+done
+for i in {1..22};do (norm --iHS --files Nchr$x.new.iHS.out );done
+#AdaptMix
+R < /home/biosoftware/AdaptMix/run_AdaptMix.R AdaptMix_paramfile AdaptMix_genotypes_file AdaptMix_ids_file  AdaptMix_out_Hui2 --no-save > screenoutput.out_Hui
